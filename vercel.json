@@ -9,6 +9,5 @@
   },
   "env": {
     "NODE_ENV": "production"
-  },
-  "envPrefix": "NEXT_PUBLIC_"
+  }
 }
