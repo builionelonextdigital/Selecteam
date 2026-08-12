@@ -2,13 +2,19 @@ const { Pool } = require('pg');
 const querystring = require('querystring');
 require('dotenv').config();
 
-// Create pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
+// Create pool with error handling
+let pool;
+
+try {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
+} catch (error) {
+  console.error('❌ Database pool creation error:', error);
+}
 
 const TEAMS = [
   { id: 1, name: 'Team A', value: 'team_a' },
@@ -19,9 +25,18 @@ const TEAMS = [
 
 const MAX_PEOPLE_PER_TEAM = 2;
 
-// Initialize database
-async function initializeDatabase() {
+// Initialize database (run once)
+let dbInitialized = false;
+
+async function ensureDatabaseInitialized() {
+  if (dbInitialized) return;
+  
   try {
+    if (!pool) {
+      console.error('❌ Pool not initialized');
+      return;
+    }
+
     const client = await pool.connect();
     
     await client.query(`
@@ -36,86 +51,116 @@ async function initializeDatabase() {
     `);
     
     client.release();
+    dbInitialized = true;
+    console.log('✓ Database initialized');
   } catch (error) {
-    console.error('Database init error:', error);
+    console.error('❌ Database init error:', error.message);
   }
 }
 
-initializeDatabase();
-
 module.exports = async (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  try {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-  if (req.method === 'GET') {
-    // Render form
-    return renderForm(req, res, '');
+    // Ensure database is initialized
+    await ensureDatabaseInitialized();
+
+    if (!pool) {
+      return res.status(500).send(`
+        <h1>❌ Database Connection Error</h1>
+        <p>DATABASE_URL is not configured.</p>
+        <p>Please add DATABASE_URL to Vercel Environment Variables.</p>
+      `);
+    }
+
+    if (req.method === 'GET') {
+      return await renderForm(req, res, '');
+    }
+
+    if (req.method === 'POST') {
+      return await handleSubmit(req, res);
+    }
+
+    res.status(405).send('Method not allowed');
+  } catch (error) {
+    console.error('❌ Handler error:', error);
+    res.status(500).send(`
+      <h1>❌ Internal Server Error</h1>
+      <p>${error.message}</p>
+    `);
   }
-
-  if (req.method === 'POST') {
-    // Parse form data
-    let body = '';
-    
-    await new Promise((resolve) => {
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-      req.on('end', resolve);
-    });
-
-    const formData = querystring.parse(body);
-    req.body = formData;
-    
-    // Handle form submission
-    return handleSubmit(req, res);
-  }
-
-  res.status(405).send('Method not allowed');
 };
 
 async function handleSubmit(req, res) {
-  const name = req.body.name || '';
-  const team = req.body.team || '';
-
-  // Validation
-  if (!name || !team) {
-    return renderForm(req, res, 'Vui lòng điền tên và chọn team');
-  }
-
-  if (!TEAMS.some(t => t.value === team)) {
-    return renderForm(req, res, 'Team không hợp lệ');
-  }
-
   try {
-    // Check current count for this team
-    const result = await pool.query(
-      'SELECT COUNT(*) as count FROM team_selections WHERE team = $1',
-      [team]
-    );
+    let body = '';
 
-    const currentCount = parseInt(result.rows[0].count);
+    // Parse form data
+    return new Promise((resolve) => {
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
 
-    if (currentCount >= MAX_PEOPLE_PER_TEAM) {
-      const teamName = TEAMS.find(t => t.value === team).name;
-      return renderForm(req, res, `${teamName} đã đủ 2 người. Vui lòng chọn team khác.`);
-    }
+      req.on('end', async () => {
+        try {
+          const formData = querystring.parse(body);
+          const name = (formData.name || '').trim();
+          const team = (formData.team || '').trim();
 
-    // Insert into database
-    await pool.query(
-      'INSERT INTO team_selections (name, team) VALUES ($1, $2)',
-      [name, team]
-    );
+          // Validation
+          if (!name || !team) {
+            return resolve(renderForm(req, res, 'Vui lòng điền tên và chọn team'));
+          }
 
-    const teamName = TEAMS.find(t => t.value === team).name;
-    return renderForm(req, res, `✓ Thành công! ${name} đã được thêm vào ${teamName}`);
+          if (!TEAMS.some(t => t.value === team)) {
+            return resolve(renderForm(req, res, 'Team không hợp lệ'));
+          }
 
+          // Check current count for this team
+          const result = await pool.query(
+            'SELECT COUNT(*) as count FROM team_selections WHERE team = $1',
+            [team]
+          );
+
+          const currentCount = parseInt(result.rows[0].count);
+
+          if (currentCount >= MAX_PEOPLE_PER_TEAM) {
+            const teamName = TEAMS.find(t => t.value === team).name;
+            return resolve(renderForm(req, res, `${teamName} đã đủ 2 người. Vui lòng chọn team khác.`));
+          }
+
+          // Insert into database
+          await pool.query(
+            'INSERT INTO team_selections (name, team) VALUES ($1, $2)',
+            [name, team]
+          );
+
+          const teamName = TEAMS.find(t => t.value === team).name;
+          return resolve(renderForm(req, res, `✓ Thành công! ${name} đã được thêm vào ${teamName}`));
+
+        } catch (error) {
+          console.error('❌ Submit error:', error);
+          resolve(renderForm(req, res, 'Có lỗi xảy ra. Vui lòng thử lại.'));
+        }
+      });
+
+      req.on('error', (error) => {
+        console.error('❌ Request error:', error);
+        res.status(400).send('Bad request');
+        resolve();
+      });
+    });
   } catch (error) {
-    console.error('Error submitting form:', error);
-    return renderForm(req, res, 'Có lỗi xảy ra. Vui lòng thử lại.');
+    console.error('❌ Handle submit error:', error);
+    res.status(500).send(`<h1>Error: ${error.message}</h1>`);
   }
 }
 
 async function getTeamCounts() {
   try {
+    if (!pool) return {};
+    
     const result = await pool.query(`
       SELECT team, COUNT(*) as count 
       FROM team_selections 
@@ -128,19 +173,10 @@ async function getTeamCounts() {
     });
     return teamCountMap;
   } catch (error) {
-    console.error('Error getting team counts:', error);
+    console.error('❌ Error getting team counts:', error.message);
     return {};
   }
 }
-
-const TEAMS = [
-  { id: 1, name: 'Team A', value: 'team_a' },
-  { id: 2, name: 'Team B', value: 'team_b' },
-  { id: 3, name: 'Team C', value: 'team_c' },
-  { id: 4, name: 'Team D', value: 'team_d' }
-];
-
-const MAX_PEOPLE_PER_TEAM = 2;
 
 async function renderForm(req, res, message = '') {
   try {
