@@ -188,6 +188,119 @@ app.get('/api/selections', async (req, res) => {
   }
 });
 
+// Debug endpoint
+app.get('/api/debug', async (req, res) => {
+  try {
+    res.setHeader('Content-Type', 'application/json');
+    const databaseUrl = process.env.DATABASE_URL;
+    let dbStatus = 'Not configured';
+    let dbError = null;
+
+    if (databaseUrl) {
+      try {
+        const client = await pool.connect();
+        await client.query('SELECT NOW()');
+        client.release();
+        dbStatus = '✓ Connected';
+      } catch (error) {
+        dbStatus = '✗ Connection failed';
+        dbError = error.message;
+      }
+    }
+
+    res.json({
+      status: 'OK',
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        DATABASE_URL_SET: !!databaseUrl,
+        DATABASE_URL_LENGTH: databaseUrl ? databaseUrl.length : 0
+      },
+      database: {
+        status: dbStatus,
+        error: dbError
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Results page endpoint
+app.get('/api/results', async (req, res) => {
+  try {
+    const selections = await pool.query(
+      'SELECT * FROM team_selections ORDER BY created_at DESC'
+    );
+    
+    const teamMembers = {};
+    TEAMS.forEach(team => {
+      teamMembers[team.value] = [];
+    });
+
+    selections.rows.forEach(row => {
+      if (!teamMembers[row.team]) {
+        teamMembers[row.team] = [];
+      }
+      teamMembers[row.team].push(row);
+    });
+
+    const stats = {};
+    TEAMS.forEach(team => {
+      stats[team.value] = {
+        name: team.name,
+        count: teamMembers[team.value].length,
+        members: teamMembers[team.value]
+      };
+    });
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="vi">
+      <head>
+        <meta charset="UTF-8">
+        <title>Kết quả chọn team</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+          .container { max-width: 800px; margin: 0 auto; }
+          h1 { color: #333; }
+          .team-box { background: white; margin: 10px 0; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .team-name { font-weight: bold; font-size: 18px; color: #0066cc; }
+          .team-count { color: #666; margin: 5px 0; }
+          .members { margin-top: 10px; padding-left: 20px; }
+          .member { margin: 5px 0; color: #333; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>📊 Kết quả chọn team</h1>
+          ${TEAMS.map(team => {
+            const members = stats[team.value].members;
+            return `
+              <div class="team-box">
+                <div class="team-name">${team.name}</div>
+                <div class="team-count">Số người: ${members.length}/${MAX_PEOPLE_PER_TEAM}</div>
+                ${members.length > 0 ? `
+                  <div class="members">
+                    ${members.map((m, i) => `<div class="member">① ${m.name}</div>`).join('')}
+                  </div>
+                ` : '<div class="members"><em>Chưa có người chọn</em></div>'}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    res.status(500).send(`Error: ${error.message}`);
+  }
+});
+
 // Start server
 initializeDatabase().then(() => {
   app.listen(port, () => {
