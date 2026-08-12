@@ -2,19 +2,32 @@ const { Pool } = require('pg');
 const querystring = require('querystring');
 require('dotenv').config();
 
-// Create pool with error handling
-let pool;
+let pool = null;
 
-try {
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
-} catch (error) {
-  console.error('❌ Database pool creation error:', error);
+// Initialize pool
+function initPool() {
+  if (pool) return;
+
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) {
+    console.error('❌ DATABASE_URL not set');
+    return;
+  }
+
+  try {
+    pool = new Pool({
+      connectionString: dbUrl,
+      ssl: { rejectUnauthorized: false }
+    });
+    
+    console.log('✓ Database pool created');
+  } catch (error) {
+    console.error('❌ Pool creation error:', error.message);
+  }
 }
+
+// Initialize on load
+initPool();
 
 const TEAMS = [
   { id: 1, name: 'Team A', value: 'team_a' },
@@ -25,54 +38,61 @@ const TEAMS = [
 
 const MAX_PEOPLE_PER_TEAM = 2;
 
-// Initialize database (run once)
-let dbInitialized = false;
+// Ensure table exists
+async function ensureTable() {
+  if (!pool) return;
 
-async function ensureDatabaseInitialized() {
-  if (dbInitialized) return;
-  
   try {
-    if (!pool) {
-      console.error('❌ Pool not initialized');
-      return;
-    }
-
-    const client = await pool.connect();
-    
-    await client.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS team_selections (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         team VARCHAR(50) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+    `);
 
+    await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_team ON team_selections(team);
     `);
     
-    client.release();
-    dbInitialized = true;
-    console.log('✓ Database initialized');
+    console.log('✓ Table ensured');
   } catch (error) {
-    console.error('❌ Database init error:', error.message);
+    console.error('❌ Table creation error:', error.message);
   }
 }
 
 module.exports = async (req, res) => {
   try {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Cache-Control', 'no-cache');
 
-    // Ensure database is initialized
-    await ensureDatabaseInitialized();
-
+    // Check pool
     if (!pool) {
       return res.status(500).send(`
-        <h1>❌ Database Connection Error</h1>
-        <p>DATABASE_URL is not configured.</p>
-        <p>Please add DATABASE_URL to Vercel Environment Variables.</p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Error</title>
+          <style>body{font-family:Arial;padding:20px;background:#ffebee}h1{color:#c62828}</style>
+        </head>
+        <body>
+          <h1>❌ Database Not Configured</h1>
+          <p>Please add DATABASE_URL to Vercel Environment Variables:</p>
+          <ol>
+            <li>Go to Vercel Dashboard</li>
+            <li>Select Project > Settings</li>
+            <li>Add Environment Variable: DATABASE_URL</li>
+            <li>Redeploy</li>
+          </ol>
+        </body>
+        </html>
       `);
     }
+
+    // Ensure table
+    await ensureTable();
 
     if (req.method === 'GET') {
       return await renderForm(req, res, '');
@@ -84,10 +104,20 @@ module.exports = async (req, res) => {
 
     res.status(405).send('Method not allowed');
   } catch (error) {
-    console.error('❌ Handler error:', error);
+    console.error('❌ Main error:', error);
     res.status(500).send(`
-      <h1>❌ Internal Server Error</h1>
-      <p>${error.message}</p>
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <style>body{font-family:Arial;padding:20px;background:#ffebee}h1{color:#c62828}</style>
+      </head>
+      <body>
+        <h1>❌ Internal Server Error</h1>
+        <p>${error.message}</p>
+        <p><a href="/">Back</a></p>
+      </body>
+      </html>
     `);
   }
 };
@@ -96,7 +126,6 @@ async function handleSubmit(req, res) {
   try {
     let body = '';
 
-    // Parse form data
     return new Promise((resolve) => {
       req.on('data', chunk => {
         body += chunk.toString();
@@ -108,7 +137,6 @@ async function handleSubmit(req, res) {
           const name = (formData.name || '').trim();
           const team = (formData.team || '').trim();
 
-          // Validation
           if (!name || !team) {
             return resolve(renderForm(req, res, 'Vui lòng điền tên và chọn team'));
           }
@@ -117,31 +145,29 @@ async function handleSubmit(req, res) {
             return resolve(renderForm(req, res, 'Team không hợp lệ'));
           }
 
-          // Check current count for this team
-          const result = await pool.query(
+          const countResult = await pool.query(
             'SELECT COUNT(*) as count FROM team_selections WHERE team = $1',
             [team]
           );
 
-          const currentCount = parseInt(result.rows[0].count);
+          const count = parseInt(countResult.rows[0].count);
 
-          if (currentCount >= MAX_PEOPLE_PER_TEAM) {
+          if (count >= MAX_PEOPLE_PER_TEAM) {
             const teamName = TEAMS.find(t => t.value === team).name;
-            return resolve(renderForm(req, res, `${teamName} đã đủ 2 người. Vui lòng chọn team khác.`));
+            return resolve(renderForm(req, res, `${teamName} đã đủ 2 người`));
           }
 
-          // Insert into database
           await pool.query(
             'INSERT INTO team_selections (name, team) VALUES ($1, $2)',
             [name, team]
           );
 
           const teamName = TEAMS.find(t => t.value === team).name;
-          return resolve(renderForm(req, res, `✓ Thành công! ${name} đã được thêm vào ${teamName}`));
+          return resolve(renderForm(req, res, `✓ Thành công! ${name} - ${teamName}`));
 
         } catch (error) {
           console.error('❌ Submit error:', error);
-          resolve(renderForm(req, res, 'Có lỗi xảy ra. Vui lòng thử lại.'));
+          resolve(renderForm(req, res, `Lỗi: ${error.message}`));
         }
       });
 
@@ -153,50 +179,48 @@ async function handleSubmit(req, res) {
     });
   } catch (error) {
     console.error('❌ Handle submit error:', error);
-    res.status(500).send(`<h1>Error: ${error.message}</h1>`);
+    res.status(500).send('Error');
   }
 }
 
 async function getTeamCounts() {
-  try {
-    if (!pool) return {};
-    
-    const result = await pool.query(`
-      SELECT team, COUNT(*) as count 
-      FROM team_selections 
-      GROUP BY team
-    `);
+  if (!pool) return {};
 
-    const teamCountMap = {};
+  try {
+    const result = await pool.query(
+      'SELECT team, COUNT(*) as count FROM team_selections GROUP BY team'
+    );
+
+    const counts = {};
     result.rows.forEach(row => {
-      teamCountMap[row.team] = parseInt(row.count);
+      counts[row.team] = parseInt(row.count);
     });
-    return teamCountMap;
+    return counts;
   } catch (error) {
-    console.error('❌ Error getting team counts:', error.message);
+    console.error('❌ Get counts error:', error);
     return {};
   }
 }
 
-async function renderForm(req, res, message = '') {
+async function renderForm(req, res, message) {
   try {
-    const teamCountMap = await getTeamCounts();
+    const counts = await getTeamCounts();
 
-    const teamsWithStatus = TEAMS.map(team => ({
-      ...team,
-      count: teamCountMap[team.value] || 0,
-      available: (teamCountMap[team.value] || 0) < MAX_PEOPLE_PER_TEAM,
-      isFull: (teamCountMap[team.value] || 0) >= MAX_PEOPLE_PER_TEAM
+    const teams = TEAMS.map(t => ({
+      ...t,
+      count: counts[t.value] || 0,
+      isFull: (counts[t.value] || 0) >= MAX_PEOPLE_PER_TEAM
     }));
 
-    const html = generateHTML(teamsWithStatus, message);
-    res.status(200).send(html);
+    const html = getFormHTML(teams, message);
+    return res.status(200).send(html);
   } catch (error) {
-    res.status(500).send(`<h1>Error: ${error.message}</h1>`);
+    console.error('❌ Render form error:', error);
+    res.status(500).send(`Error: ${error.message}`);
   }
 }
 
-function generateHTML(teams, message) {
+function getFormHTML(teams, message) {
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
