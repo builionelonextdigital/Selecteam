@@ -12,7 +12,8 @@ const TEAMS = [
   { id: 1, name: 'Team A', value: 'team_a', color: '#667eea' },
   { id: 2, name: 'Team B', value: 'team_b', color: '#764ba2' },
   { id: 3, name: 'Team C', value: 'team_c', color: '#f093fb' },
-  { id: 4, name: 'Team D', value: 'team_d', color: '#4facfe' }
+  { id: 4, name: 'Team D', value: 'team_d', color: '#4facfe' },
+  { id: 5, name: 'Team E', value: 'team_e', color: '#43e97b' }
 ];
 
 module.exports = async (req, res) => {

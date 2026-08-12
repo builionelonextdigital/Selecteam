@@ -7,7 +7,7 @@ const TEAMS = [
   { id: 2, name: 'Team B', value: 'team_b' },
   { id: 3, name: 'Team C', value: 'team_c' },
   { id: 4, name: 'Team D', value: 'team_d' },
-    { id: 5, name: 'Team E', value: 'team_e' }
+  { id: 5, name: 'Team E', value: 'team_e' }
 ];
 
 const MAX_PEOPLE_PER_TEAM = 2;
