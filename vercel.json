@@ -1,0 +1,14 @@
+{
+  "buildCommand": "npm install",
+  "regions": ["sfo1"],
+  "functions": {
+    "server.js": {
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "NODE_ENV": "production"
+  }
+}
