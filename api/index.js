@@ -2,46 +2,31 @@ const { Pool } = require('pg');
 const querystring = require('querystring');
 require('dotenv').config();
 
-let pool = null;
-
-// Initialize pool
-function initPool() {
-  if (pool) return;
-
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
-    console.error('❌ DATABASE_URL not set');
-    return;
-  }
-
-  try {
-    pool = new Pool({
-      connectionString: dbUrl,
-      ssl: { rejectUnauthorized: false }
-    });
-    
-    console.log('✓ Database pool created');
-  } catch (error) {
-    console.error('❌ Pool creation error:', error.message);
-  }
-}
-
-// Initialize on load
-initPool();
-
 const TEAMS = [
   { id: 1, name: 'Team A', value: 'team_a' },
   { id: 2, name: 'Team B', value: 'team_b' },
   { id: 3, name: 'Team C', value: 'team_c' },
-  { id: 4, name: 'Team D', value: 'team_d' }
+  { id: 4, name: 'Team D', value: 'team_d' },
+    { id: 5, name: 'Team E', value: 'team_e' }
 ];
 
 const MAX_PEOPLE_PER_TEAM = 2;
 
-// Ensure table exists
-async function ensureTable() {
-  if (!pool) return;
+let poolInstance = null;
 
+function getPool() {
+  if (poolInstance) return poolInstance;
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) throw new Error('DATABASE_URL not configured');
+  poolInstance = new Pool({
+    connectionString: dbUrl,
+    ssl: { rejectUnauthorized: false }
+  });
+  return poolInstance;
+}
+
+async function ensureTable() {
+  const pool = getPool();
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS team_selections (
@@ -51,176 +36,41 @@ async function ensureTable() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_team ON team_selections(team);
-    `);
-    
-    console.log('✓ Table ensured');
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_team ON team_selections(team);`);
   } catch (error) {
-    console.error('❌ Table creation error:', error.message);
-  }
-}
-
-module.exports = async (req, res) => {
-  try {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-
-    // Check pool
-    if (!pool) {
-      return res.status(500).send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>Error</title>
-          <style>body{font-family:Arial;padding:20px;background:#ffebee}h1{color:#c62828}</style>
-        </head>
-        <body>
-          <h1>❌ Database Not Configured</h1>
-          <p>Please add DATABASE_URL to Vercel Environment Variables:</p>
-          <ol>
-            <li>Go to Vercel Dashboard</li>
-            <li>Select Project > Settings</li>
-            <li>Add Environment Variable: DATABASE_URL</li>
-            <li>Redeploy</li>
-          </ol>
-        </body>
-        </html>
-      `);
-    }
-
-    // Ensure table
-    await ensureTable();
-
-    if (req.method === 'GET') {
-      return await renderForm(req, res, '');
-    }
-
-    if (req.method === 'POST') {
-      return await handleSubmit(req, res);
-    }
-
-    res.status(405).send('Method not allowed');
-  } catch (error) {
-    console.error('❌ Main error:', error);
-    res.status(500).send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>body{font-family:Arial;padding:20px;background:#ffebee}h1{color:#c62828}</style>
-      </head>
-      <body>
-        <h1>❌ Internal Server Error</h1>
-        <p>${error.message}</p>
-        <p><a href="/">Back</a></p>
-      </body>
-      </html>
-    `);
-  }
-};
-
-async function handleSubmit(req, res) {
-  try {
-    let body = '';
-
-    return new Promise((resolve) => {
-      req.on('data', chunk => {
-        body += chunk.toString();
-      });
-
-      req.on('end', async () => {
-        try {
-          const formData = querystring.parse(body);
-          const name = (formData.name || '').trim();
-          const team = (formData.team || '').trim();
-
-          if (!name || !team) {
-            return resolve(renderForm(req, res, 'Vui lòng điền tên và chọn team'));
-          }
-
-          if (!TEAMS.some(t => t.value === team)) {
-            return resolve(renderForm(req, res, 'Team không hợp lệ'));
-          }
-
-          const countResult = await pool.query(
-            'SELECT COUNT(*) as count FROM team_selections WHERE team = $1',
-            [team]
-          );
-
-          const count = parseInt(countResult.rows[0].count);
-
-          if (count >= MAX_PEOPLE_PER_TEAM) {
-            const teamName = TEAMS.find(t => t.value === team).name;
-            return resolve(renderForm(req, res, `${teamName} đã đủ 2 người`));
-          }
-
-          await pool.query(
-            'INSERT INTO team_selections (name, team) VALUES ($1, $2)',
-            [name, team]
-          );
-
-          const teamName = TEAMS.find(t => t.value === team).name;
-          return resolve(renderForm(req, res, `✓ Thành công! ${name} - ${teamName}`));
-
-        } catch (error) {
-          console.error('❌ Submit error:', error);
-          resolve(renderForm(req, res, `Lỗi: ${error.message}`));
-        }
-      });
-
-      req.on('error', (error) => {
-        console.error('❌ Request error:', error);
-        res.status(400).send('Bad request');
-        resolve();
-      });
-    });
-  } catch (error) {
-    console.error('❌ Handle submit error:', error);
-    res.status(500).send('Error');
+    console.error('Table error:', error);
   }
 }
 
 async function getTeamCounts() {
-  if (!pool) return {};
-
+  const pool = getPool();
   try {
-    const result = await pool.query(
-      'SELECT team, COUNT(*) as count FROM team_selections GROUP BY team'
-    );
-
+    const result = await pool.query('SELECT team, COUNT(*) as count FROM team_selections GROUP BY team');
     const counts = {};
     result.rows.forEach(row => {
       counts[row.team] = parseInt(row.count);
     });
     return counts;
   } catch (error) {
-    console.error('❌ Get counts error:', error);
     return {};
   }
 }
 
-async function renderForm(req, res, message) {
-  try {
-    const counts = await getTeamCounts();
-
-    const teams = TEAMS.map(t => ({
-      ...t,
-      count: counts[t.value] || 0,
-      isFull: (counts[t.value] || 0) >= MAX_PEOPLE_PER_TEAM
-    }));
-
-    const html = getFormHTML(teams, message);
-    return res.status(200).send(html);
-  } catch (error) {
-    console.error('❌ Render form error:', error);
-    res.status(500).send(`Error: ${error.message}`);
-  }
-}
-
 function getFormHTML(teams, message) {
+  const teamOptions = teams.map(t => {
+    const full = t.isFull ? 'disabled' : '';
+    const status = t.isFull ? '❌ Đã đủ' : '✓';
+    return `<option value="${t.value}" ${full}>${t.name} (${t.count}/${MAX_PEOPLE_PER_TEAM}) ${status}</option>`;
+  }).join('');
+
+  const teamBadges = teams.map(t => {
+    const cls = t.isFull ? 'full' : 'available';
+    return `<div class="team-badge ${cls}">${t.name}: ${t.count}/${MAX_PEOPLE_PER_TEAM}</div>`;
+  }).join('');
+
+  const msgClass = message.includes('✓') ? 'success' : 'error';
+  const msgHtml = message ? `<div class="message ${msgClass}">${message}</div>` : '';
+
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -228,12 +78,7 @@ function getFormHTML(teams, message) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chọn Team</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -243,7 +88,6 @@ function getFormHTML(teams, message) {
             align-items: center;
             padding: 20px;
         }
-
         .container {
             background: white;
             border-radius: 15px;
@@ -252,232 +96,143 @@ function getFormHTML(teams, message) {
             max-width: 500px;
             width: 100%;
         }
-
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .header h1 {
-            color: #333;
-            font-size: 28px;
-            margin-bottom: 10px;
-        }
-
-        .header p {
-            color: #666;
-            font-size: 14px;
-        }
-
-        .message {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-            text-align: center;
-            display: none;
-        }
-
-        .message.success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-            display: block;
-        }
-
-        .message.error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-            display: block;
-        }
-
-        .team-status {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
-            margin-bottom: 25px;
-            padding: 15px;
-            background-color: #f9f9f9;
-            border-radius: 8px;
-        }
-
-        .team-card {
-            background: white;
-            padding: 12px;
-            border-radius: 8px;
-            text-align: center;
-            border: 2px solid #e0e0e0;
-        }
-
-        .team-card.full {
-            background-color: #ffebee;
-            border-color: #ef5350;
-        }
-
-        .team-card.full .team-name {
-            color: #c62828;
-        }
-
-        .team-card.available {
-            border-color: #66bb6a;
-            background-color: #f1f8f4;
-        }
-
-        .team-card.available .team-name {
-            color: #2e7d32;
-        }
-
-        .team-name {
-            font-weight: 600;
-            font-size: 13px;
-            margin-bottom: 5px;
-        }
-
-        .team-count {
-            font-size: 12px;
-            color: #666;
-        }
-
-        .form-group {
-            margin-bottom: 25px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 600;
-            font-size: 14px;
-        }
-
-        input[type="text"],
-        select {
+        h1 { color: #333; margin-bottom: 10px; text-align: center; }
+        .subtitle { color: #666; text-align: center; margin-bottom: 30px; font-size: 14px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; color: #333; font-weight: 500; }
+        input, select {
             width: 100%;
-            padding: 12px 15px;
+            padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
-            font-size: 15px;
-            font-family: inherit;
+            font-size: 16px;
+            transition: border-color 0.3s;
         }
-
-        input[type="text"]:focus,
-        select:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
-        .button-group {
-            display: flex;
-            gap: 10px;
-        }
-
+        input:focus, select:focus { outline: none; border-color: #667eea; }
         button {
-            flex: 1;
+            width: 100%;
             padding: 12px;
-            border: none;
-            border-radius: 8px;
-            font-size: 15px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .btn-submit {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s;
         }
-
-        .btn-submit:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
-        }
-
-        .btn-reset {
-            background-color: #e0e0e0;
-            color: #333;
-        }
-
-        .btn-reset:hover {
-            background-color: #d0d0d0;
-        }
-
-        .selections-link {
-            text-align: center;
+        button:hover { transform: translateY(-2px); }
+        .message {
             margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #e0e0e0;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 500;
         }
-
-        .selections-link a {
-            color: #667eea;
-            text-decoration: none;
-            font-size: 13px;
-            font-weight: 600;
-        }
-
-        .selections-link a:hover {
-            text-decoration: underline;
-        }
-
-        @media (max-width: 600px) {
-            .container {
-                padding: 25px;
-            }
-
-            .team-status {
-                grid-template-columns: 1fr;
-            }
-        }
+        .message.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #4caf50; }
+        .message.error { background: #ffebee; color: #c62828; border: 1px solid #f44336; }
+        .team-status { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0; }
+        .team-badge { padding: 8px; border-radius: 8px; text-align: center; font-size: 12px; font-weight: bold; }
+        .team-badge.full { background: #ffebee; color: #c62828; }
+        .team-badge.available { background: #e8f5e9; color: #2e7d32; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🎯 Chọn Team</h1>
-            <p>Mỗi team chỉ có tối đa 2 người. Vui lòng chọn team của bạn.</p>
-        </div>
-
-        ${message ? `<div class="message ${message.includes('✓') ? 'success' : 'error'}">${message}</div>` : ''}
-
-        <div class="team-status">
-            ${teams.map(team => `
-                <div class="team-card ${team.isFull ? 'full' : 'available'}">
-                    <div class="team-name">${team.name} ${team.isFull ? '❌' : '✓'}</div>
-                    <div class="team-count">${team.count}/${MAX_PEOPLE_PER_TEAM}</div>
-                </div>
-            `).join('')}
-        </div>
-
-        <form method="POST" action="/api">
+        <h1>🏆 Chọn Team</h1>
+        <p class="subtitle">Mỗi team tối đa 2 người</p>
+        <form method="POST">
             <div class="form-group">
                 <label for="name">👤 Tên của bạn</label>
-                <input type="text" id="name" name="name" placeholder="Nhập tên" required maxlength="100">
+                <input type="text" id="name" name="name" placeholder="Nhập tên..." required>
             </div>
-
             <div class="form-group">
-                <label for="team">🏆 Chọn Team</label>
+                <label for="team">🎯 Chọn Team</label>
                 <select id="team" name="team" required>
-                    <option value="">-- Chọn Team --</option>
-                    ${teams.map(team => `
-                        <option value="${team.value}" ${team.isFull ? 'disabled' : ''}>
-                            ${team.name} (${team.count}/${MAX_PEOPLE_PER_TEAM})
-                        </option>
-                    `).join('')}
+                    <option value="">-- Chọn team --</option>
+                    ${teamOptions}
                 </select>
             </div>
-
-            <div class="button-group">
-                <button type="submit" class="btn-submit">Gửi</button>
-                <button type="reset" class="btn-reset">Xóa</button>
-            </div>
+            <button type="submit">📤 Gửi</button>
         </form>
-
-        <div class="selections-link">
-            <a href="/api/results" target="_blank">📊 Xem kết quả</a>
+        ${msgHtml}
+        <div class="team-status">
+            ${teamBadges}
         </div>
     </div>
 </body>
 </html>`;
 }
+
+module.exports = async (req, res) => {
+  try {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    await ensureTable();
+
+    if (req.method === 'GET') {
+      const counts = await getTeamCounts();
+      const teams = TEAMS.map(t => ({
+        ...t,
+        count: counts[t.value] || 0,
+        isFull: (counts[t.value] || 0) >= MAX_PEOPLE_PER_TEAM
+      }));
+      return res.status(200).send(getFormHTML(teams, ''));
+    }
+
+    if (req.method === 'POST') {
+      return new Promise((resolve) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+          try {
+            const pool = getPool();
+            const formData = querystring.parse(body);
+            const name = (formData.name || '').trim();
+            const team = (formData.team || '').trim();
+            const counts = await getTeamCounts();
+            const teams = TEAMS.map(t => ({
+              ...t,
+              count: counts[t.value] || 0,
+              isFull: (counts[t.value] || 0) >= MAX_PEOPLE_PER_TEAM
+            }));
+
+            if (!name || !team) {
+              return resolve(res.status(200).send(getFormHTML(teams, 'Vui lòng điền tên và chọn team')));
+            }
+
+            if (!TEAMS.some(t => t.value === team)) {
+              return resolve(res.status(200).send(getFormHTML(teams, 'Team không hợp lệ')));
+            }
+
+            const countResult = await pool.query('SELECT COUNT(*) as count FROM team_selections WHERE team = $1', [team]);
+            const count = parseInt(countResult.rows[0].count);
+
+            if (count >= MAX_PEOPLE_PER_TEAM) {
+              const teamName = TEAMS.find(t => t.value === team).name;
+              return resolve(res.status(200).send(getFormHTML(teams, teamName + ' đã đủ 2 người')));
+            }
+
+            await pool.query('INSERT INTO team_selections (name, team) VALUES ($1, $2)', [name, team]);
+
+            const teamName = TEAMS.find(t => t.value === team).name;
+            const newCounts = await getTeamCounts();
+            const newTeams = TEAMS.map(t => ({
+              ...t,
+              count: newCounts[t.value] || 0,
+              isFull: (newCounts[t.value] || 0) >= MAX_PEOPLE_PER_TEAM
+            }));
+            resolve(res.status(200).send(getFormHTML(newTeams, '✓ Thành công! ' + name + ' - ' + teamName)));
+          } catch (error) {
+            console.error('Error:', error);
+            resolve(res.status(500).send('Error: ' + error.message));
+          }
+        });
+      });
+    }
+
+    res.status(405).send('Method not allowed');
+  } catch (error) {
+    console.error('Handler error:', error);
+    res.status(500).send('Internal Server Error: ' + error.message);
+  }
+};
