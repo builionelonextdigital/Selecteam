@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://neondb_owner:npg_m7OTkheDYM5s@ep-dawn-sound-axt639na-pooler.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      PORT: 3000
+    depends_on:
+      - postgres
+    networks:
+      - selecteam-network
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: neondb_owner
+      POSTGRES_PASSWORD: npg_m7OTkheDYM5s
+      POSTGRES_DB: neondb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - selecteam-network
+
+volumes:
+  postgres_data:
+
+networks:
+  selecteam-network:
+    driver: bridge
